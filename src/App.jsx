@@ -190,6 +190,7 @@ const CHOSEN_TRAITS = {
     story: (n, w) => `${n} knows every family in ${w} by name. Where ${n} walks, more children are born, more hearths are lit, and the village grows.` },
 };
 const TRAIT_ORDER = ["warrior", "prophet", "mason", "shepherd"];
+const ROLE_NAME = { warrior: "Warrior", prophet: "Prophet", mason: "Mason", shepherd: "Shepherd" };
 const FIRST_NAMES = ["Bren", "Kael", "Soren", "Mira", "Thane", "Ola", "Dax", "Vesh", "Ryn", "Tamsin", "Goro", "Esca", "Hild", "Pax", "Juno", "Wren", "Castor", "Nael", "Oru", "Sable", "Yara", "Dorn", "Lio", "Fenn"];
 
 // ---------- HELPERS ----------
@@ -278,6 +279,13 @@ function weekStatsFor(workouts) {
 const HOUSE_NAMES = ["Emberfell", "Ironvale", "Stormcrest", "Ashmoor", "Goldhelm", "Thornwood", "Wyrmstone", "Hollowmere", "Brightwater", "Ravenhold", "Drakemont", "Sunspear", "Coldforge", "Mossgrave", "Highwind"];
 const LIFESPAN = 3; // eras a head reigns before passing the throne to an heir
 function ordinal(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+// pick a House surname not already used by a living or fallen bloodline, so families stay distinct
+function pickHouseName(used, seed) {
+  const taken = new Set(used || []);
+  const free = HOUSE_NAMES.filter((h) => !taken.has(h));
+  const pool = free.length ? free : HOUSE_NAMES;
+  return pool[Math.abs(seed) % pool.length];
+}
 
 // per-champion bonus, scaling with the generation of the bloodline
 function champLabel(c) {
@@ -323,7 +331,7 @@ function ageBloodlines(champions, legacies, fromEra, toEra, seed) {
         const heirEp = eps[Math.floor(r() * eps.length)];
         legs.push({ line: c.line, surname: c.surname, name: c.name, epithet: c.epithet, trait: c.trait, gen: c.gen || 1, fromEra: c.bornEra ?? fromEra, toEra: e, epitaph: epitaphFor(c) });
         events.push(`⚰️ ${c.name} ${c.epithet} of House ${c.surname} passes into legend. ${heirName}, ${ordinal(g)}-generation heir, takes the throne.`);
-        return { ...c, name: heirName, epithet: heirEp, gen: g, reign: 0, bornEra: e };
+        return { ...c, name: heirName, epithet: heirEp, gen: g, reign: 0, bornEra: e, parentName: c.name };
       }
       return { ...c, reign };
     });
@@ -724,6 +732,7 @@ export default function Ironworld() {
   const [editing, setEditing] = useState(null);     // session draft being edited/created
   const [crownOpen, setCrownOpen] = useState(false); // champion selection modal
   const [celebrate, setCelebrate] = useState(null);  // newly crowned champion
+  const [champView, setChampView] = useState(null);  // champion detail card
   const [readChapter, setReadChapter] = useState(null); // saga chapter open in modal
   const [sagaPing, setSagaPing] = useState(null);    // latest newly-unlocked chapter
   const [calOffset, setCalOffset] = useState(0);     // calendar month offset (0 = current)
@@ -1084,7 +1093,8 @@ export default function Ironworld() {
   const crownChampion = (chosen) => {
     if (!canCrown || state.power < crownCost) return;
     const line = `L${Date.now()}`;
-    const surname = HOUSE_NAMES[hashStr(line + chosen.cid) % HOUSE_NAMES.length];
+    const usedHouses = [...champions.map((c) => c.surname), ...(state.legacies || []).map((l) => l.surname)];
+    const surname = pickHouseName(usedHouses, hashStr(line + chosen.cid));
     const champ = { cid: chosen.cid, name: chosen.name, trait: chosen.trait, epithet: chosen.epithet, era, date: todayStr(), line, gen: 1, surname, reign: 0, bornEra: era, founderName: chosen.name };
     save({
       ...state, power: state.power - crownCost,
@@ -1207,7 +1217,8 @@ export default function Ironworld() {
 
   // ---------- STYLES ----------
   const S = {
-    app: { fontFamily: "'Pixelify Sans', 'Courier New', monospace", background: "#0b0e14", color: "#e8e0cc", minHeight: "100vh", maxWidth: 560, margin: "0 auto", paddingBottom: 90 },
+    app: { fontFamily: "'Pixelify Sans', 'Courier New', monospace", background: "#0b0e14", color: "#e8e0cc", display: "flex", flexDirection: "column", position: "relative" },
+    tabbar: { display: "flex", background: "#10141d", borderTop: "2px solid #2a3242", flex: "0 0 auto" },
     panel: { background: "#151a24", border: "2px solid #2a3242", borderRadius: 10, padding: 14, margin: "10px 12px" },
     btn: (bg = "#f0b541", fg = "#1a1408") => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "12px 16px", fontFamily: "inherit", fontWeight: 700, fontSize: 15, cursor: "pointer", width: "100%" }),
     small: { fontSize: 12, opacity: 0.7 },
@@ -1220,8 +1231,9 @@ export default function Ironworld() {
 
   // ---------- TABS ----------
   return (
-    <div style={S.app}>
-      <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+    <div className="iw-shell">
+      <FrameStyle />
+      <div className="iw-card" style={S.app}>
       {/* HEADER */}
       <div style={{ padding: "14px 12px 4px", display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div>
@@ -1234,18 +1246,21 @@ export default function Ironworld() {
         </div>
       </div>
 
+      <div className="iw-scroll">
+
+      {/* WORLD MAP — kept mounted on every tab so the Share card can always capture it */}
+      <div style={{ margin: "8px 12px", display: tab === "world" ? "block" : "none" }}>
+        <WorldCanvas state={state} dormant={dormant} />
+        {dormant && (
+          <div style={{ textAlign: "center", marginTop: 6, color: "#9aa3ad", fontSize: 13 }}>
+            The skies have gone grey. Your world sleeps until its god returns to the gym.
+          </div>
+        )}
+      </div>
+
       {/* WORLD TAB */}
       {tab === "world" && (
         <>
-          <div style={{ margin: "8px 12px" }}>
-            <WorldCanvas state={state} dormant={dormant} />
-            {dormant && (
-              <div style={{ textAlign: "center", marginTop: 6, color: "#9aa3ad", fontSize: 13 }}>
-                The skies have gone grey. Your world sleeps until its god returns to the gym.
-              </div>
-            )}
-            <button style={{ ...S.btn("#2a3242", "#caa6f0"), padding: "9px", marginTop: 8 }} onClick={makeShareCard}>📸 Share Empire Card</button>
-          </div>
           <div style={S.panel}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <div style={{ ...S.h, color: ERAS[era].color }}>{ERAS[era].name}</div>
@@ -1311,28 +1326,17 @@ export default function Ironworld() {
             {champions.length === 0 && maxChampions === 0 && (
               <div style={S.small}>At the {ERAS[2].name} you may raise a mortal above all others — a hero to rule in your name across every age to come.{nextSlotEra ? ` (${ERAS[nextSlotEra].need - counted} workouts away)` : ""}</div>
             )}
-            {champions.map((c) => {
-              const lineage = (state.legacies || []).filter((l) => l.line === c.line);
-              const tale = () => {
-                let t = `${CHOSEN_TRAITS[c.trait].story(c.founderName || c.name, state.worldName)}\n\nHouse ${c.surname} now sits the throne in its ${ordinal(c.gen || 1)} generation, led by ${c.name} ${c.epithet}. Gift to your empire: ${champLabel(c)}.`;
-                if (lineage.length) {
-                  t += `\n\n— Those who came before —`;
-                  lineage.forEach((l) => { t += `\n${l.name} ${l.epithet} (${ERAS[l.fromEra]?.name || "?"}–${ERAS[l.toEra]?.name || "?"}): ${l.epitaph}`; });
-                }
-                t += `\n\nSo long as ${state.worldName} stands, House ${c.surname} rules in your name.`;
-                return t;
-              };
-              return (
-                <div key={c.cid} onClick={() => setReadChapter({ title: `House ${c.surname} · ${c.name} ${c.epithet}`, text: tale })}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1f2530", cursor: "pointer" }}>
-                  <div style={{ width: 34, height: 34, borderRadius: 8, background: CHOSEN_TRAITS[c.trait].color + "33", border: `2px solid ${CHOSEN_TRAITS[c.trait].color}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>👑</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{c.name} <span style={{ color: CHOSEN_TRAITS[c.trait].color }}>{c.epithet}</span></div>
-                    <div style={S.small}>House {c.surname} · Gen {c.gen || 1} · {champLabel(c)}</div>
-                  </div>
+            {champions.map((c) => (
+              <div key={c.cid} onClick={() => setChampView(c)}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #1f2530", cursor: "pointer" }}>
+                <div style={{ width: 34, height: 34, borderRadius: 8, background: CHOSEN_TRAITS[c.trait].color + "33", border: `2px solid ${CHOSEN_TRAITS[c.trait].color}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>👑</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{c.name} <span style={{ color: CHOSEN_TRAITS[c.trait].color }}>{c.epithet}</span></div>
+                  <div style={S.small}>{ROLE_NAME[c.trait]} · House {c.surname} · Gen {c.gen || 1}</div>
                 </div>
-              );
-            })}
+                <div style={{ color: "#6a7280", fontSize: 18 }}>›</div>
+              </div>
+            ))}
             {canCrown && availableChosen.length > 0 && (
               <button style={{ ...S.btn("#f0b541"), marginTop: 10, padding: "10px" }} onClick={() => setCrownOpen(true)}>
                 👑 Crown a Champion · {crownCost}⚡
@@ -1674,6 +1678,10 @@ export default function Ironworld() {
             <Stat label="PRs" value={Object.keys(state.bestLifts).length} hint="lifts tracked" color="#c4453c" />
           </div>
 
+          <div style={{ margin: "10px 12px" }}>
+            <button style={{ ...S.btn("#2a3242", "#caa6f0"), padding: "10px" }} onClick={makeShareCard}>📸 Share Empire Card</button>
+          </div>
+
           {/* STREAK + CALENDAR */}
           <div style={S.panel}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -1710,15 +1718,16 @@ export default function Ironworld() {
               {champions.map((c) => {
                 const lineage = (state.legacies || []).filter((l) => l.line === c.line);
                 return (
-                  <div key={c.line} style={{ background: "#0b0e14", border: "1px solid #2a3242", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                  <div key={c.line} onClick={() => setChampView(c)} style={{ background: "#0b0e14", border: "1px solid #2a3242", borderRadius: 8, padding: 10, marginBottom: 8, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
-                      <div style={{ fontWeight: 700, fontSize: 15 }}>House {c.surname}</div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>House {c.surname} <span style={{ ...S.small, fontWeight: 400 }}>· {ROLE_NAME[c.trait]}</span></div>
                       <div style={{ fontSize: 12, color: CHOSEN_TRAITS[c.trait].color }}>Gen {c.gen || 1} · {champLabel(c)}</div>
                     </div>
                     <div style={S.small}>Now reigning: {c.name} {c.epithet}</div>
                     {lineage.map((l, i) => (
                       <div key={i} style={{ ...S.small, opacity: 0.6, marginTop: 4 }}>⚰️ {l.name} {l.epithet} — {l.epitaph}</div>
                     ))}
+                    <div style={{ ...S.small, color: CHOSEN_TRAITS[c.trait].color, marginTop: 6 }}>Tap to view the bloodline ›</div>
                   </div>
                 );
               })}
@@ -1799,6 +1808,8 @@ export default function Ironworld() {
           </div>
         </>
       )}
+
+      </div>{/* end .iw-scroll */}
 
       {/* REWARD MODAL */}
       {reward && (
@@ -1947,6 +1958,11 @@ export default function Ironworld() {
         </Modal>
       )}
 
+      {/* CHAMPION DETAIL CARD */}
+      {champView && (
+        <ChampionCard S={S} champ={champView} legacies={state.legacies || []} worldName={state.worldName} onClose={() => setChampView(null)} />
+      )}
+
       {/* SAGA CHAPTER READER */}
       {readChapter && (
         <Modal onClose={() => setReadChapter(null)}>
@@ -1977,7 +1993,7 @@ export default function Ironworld() {
       )}
 
       {/* TAB BAR */}
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 560, margin: "0 auto", display: "flex", background: "#10141d", borderTop: "2px solid #2a3242" }}>
+      <div style={S.tabbar}>
         {[["world", "🌍", "World"], ["build", "🔨", "Build"], ["conquest", "⚔️", "Conquest"], ["train", "🏋️", "Train"], ["history", "📜", "Chronicle"]].map(([id, icon, label]) => (
           <div key={id} onClick={() => { setTab(id); setSession(null); }}
             style={{ flex: 1, textAlign: "center", padding: "10px 0 12px", cursor: "pointer", color: tab === id ? "#f0b541" : "#6a7280", borderTop: tab === id ? "2px solid #f0b541" : "2px solid transparent", marginTop: -2 }}>
@@ -1986,6 +2002,7 @@ export default function Ironworld() {
           </div>
         ))}
       </div>
+      </div>{/* end .iw-card */}
     </div>
   );
 }
@@ -2016,6 +2033,72 @@ function Modal({ children, onClose }) {
         {children}
       </div>
     </div>
+  );
+}
+
+// ---------- FRAME (font + responsive "app card" styling) ----------
+function FrameStyle() {
+  return (
+    <>
+      <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+      <style>{`
+        .iw-shell { min-height: 100vh; min-height: 100dvh; background: #06080c; display: flex; justify-content: center; align-items: stretch; }
+        .iw-card { width: 100%; max-width: 560px; min-height: 100vh; min-height: 100dvh; }
+        .iw-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        @media (min-width: 620px) {
+          .iw-shell { align-items: center; padding: 24px 16px; background: radial-gradient(circle at 50% 0%, #12161f 0%, #06080c 70%); }
+          .iw-card { min-height: 0; height: calc(100dvh - 48px); max-height: 940px; border: 2px solid #2a3242; border-radius: 18px; box-shadow: 0 24px 70px rgba(0,0,0,0.65); overflow: hidden; }
+        }
+      `}</style>
+    </>
+  );
+}
+
+// ---------- CHAMPION DETAIL CARD ----------
+function CardStat({ label, value, color }) {
+  return (
+    <div style={{ flex: 1, background: "#0b0e14", borderRadius: 8, padding: "8px 6px", textAlign: "center", border: "1px solid #2a3242" }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: 10, opacity: 0.6 }}>{label}</div>
+    </div>
+  );
+}
+function ChampionCard({ S, champ: c, legacies, worldName, onClose }) {
+  const tr = CHOSEN_TRAITS[c.trait];
+  const lineage = (legacies || []).filter((l) => l.line === c.line).sort((a, b) => (a.gen || 1) - (b.gen || 1));
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ width: 60, height: 60, margin: "0 auto", borderRadius: 12, background: tr.color + "26", border: `2px solid ${tr.color}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>👑</div>
+        <div style={{ fontSize: 20, fontWeight: 700, marginTop: 8 }}>{c.name} <span style={{ color: tr.color }}>{c.epithet}</span></div>
+        <div style={S.small}>House {c.surname}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, margin: "14px 0" }}>
+        <CardStat label="Role" value={ROLE_NAME[c.trait]} color={tr.color} />
+        <CardStat label="Generation" value={ordinal(c.gen || 1)} color="#e8e0cc" />
+        <CardStat label="Crowned" value={ERAS[c.bornEra ?? c.era ?? 0]?.name || "—"} color="#9aa3ad" />
+      </div>
+      <div style={{ background: "#0b0e14", borderRadius: 8, padding: 12, border: "1px solid #2a3242" }}>
+        <Row k="Gift to your empire" v={champLabel(c)} gold />
+        <Row k="Founder of the house" v={c.founderName || c.name} />
+        {(c.gen || 1) > 1 && <Row k="Child of" v={c.parentName || "—"} />}
+      </div>
+      <div style={{ fontSize: 14, lineHeight: 1.6, marginTop: 12 }}>{tr.story(c.founderName || c.name, worldName)}</div>
+      {lineage.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: tr.color, marginBottom: 6 }}>⚜ The line of House {c.surname}</div>
+          {lineage.map((l, i) => (
+            <div key={i} style={{ background: "#0b0e14", border: "1px solid #2a3242", borderRadius: 8, padding: 8, marginBottom: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>⚰️ {l.name} {l.epithet} <span style={{ ...S.small, fontWeight: 400 }}>· {ordinal(l.gen || 1)} gen</span></div>
+              <div style={S.small}>{ERAS[l.fromEra]?.name || "?"} – {ERAS[l.toEra]?.name || "?"}</div>
+              <div style={{ ...S.small, opacity: 0.85, marginTop: 2 }}>{l.epitaph}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ ...S.small, textAlign: "center", marginTop: 12 }}>So long as {worldName} stands, House {c.surname} rules in your name.</div>
+      <button style={{ ...S.btn(tr.color, "#0b0e14"), marginTop: 12 }} onClick={onClose}>Close</button>
+    </Modal>
   );
 }
 
@@ -2140,8 +2223,10 @@ function Onboarding({ S, onCreate }) {
   const [banner, setBanner] = useState(BANNER_COLORS[0]);
   const input = { width: "100%", background: "#0b0e14", border: "2px solid #2a3242", color: "#e8e0cc", borderRadius: 8, padding: "12px", fontFamily: "inherit", fontSize: 15, marginTop: 6, boxSizing: "border-box" };
   return (
-    <div style={{ ...S.app, paddingBottom: 20 }}>
-      <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+    <div className="iw-shell">
+      <FrameStyle />
+      <div className="iw-card" style={S.app}>
+      <div className="iw-scroll">
       <div style={{ textAlign: "center", padding: "36px 16px 8px" }}>
         <div style={{ fontSize: 34, fontWeight: 700, color: "#f0b541", letterSpacing: 2 }}>IRONWORLD</div>
         <div style={{ fontSize: 14, opacity: 0.7, marginTop: 4 }}>Empire of the Iron God</div>
@@ -2170,6 +2255,8 @@ function Onboarding({ S, onCreate }) {
       <div style={{ margin: "10px 12px" }}>
         <button style={S.btn()} onClick={() => onCreate(god.trim(), world.trim(), banner)}>⚡ Raise the World</button>
       </div>
+      </div>{/* end .iw-scroll */}
+      </div>{/* end .iw-card */}
     </div>
   );
 }
